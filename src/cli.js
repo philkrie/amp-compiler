@@ -19,6 +19,7 @@ Options (*denotes default value if not passed in):
   --compareScreenshots=(true|false*)\tWhether to compare original site with converted.
   --customHost=HOST\tUse a custom host name when updating relative asset URLs.
   --port=PORT_NUMBER\tPort number to use to compare before and after (defaults to 8080).
+  --compiler=(true|false*)\tWhether or not to treat as a compiler. Takes raw HTML input instead of URL
 
 Examples:
   # Amplify a page and generate results in /output folder.
@@ -41,6 +42,9 @@ Examples:
 
   # Amplify a page that served from localhost and generate results with correct absolute URLs for assets.
   ./amp-prototyper https://thinkwithgoogle.com --customHost=https://example.com
+
+  # Amplify an HTML file.
+  ./amp-prototyper index.html --compiler=true
   `;
   console.log(usage);
 }
@@ -49,9 +53,13 @@ Examples:
  * Main CLI function.
  */
 async function begin() {
-  let url = argv['_'][0], output = argv['output'];
+  let url = argv['_'][0], output = argv['output'], compiler = argv['compiler'];
   let customSteps = argv['steps'] ?
       require(`../${argv['steps']}`) : null;
+
+  if (compiler){
+    console.log("Using as compiler");
+  }
 
   if (!url) {
     printUsage();

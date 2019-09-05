@@ -19,6 +19,8 @@ const {
 const PNG = require('pngjs').PNG;
 const pixelmatch = require('pixelmatch');
 const watermarkTpl = require('./watermark');
+const fs = require('fs');
+const compile = require('./compile');
 
 
 let outputPath, verbose, envVars;
@@ -363,6 +365,8 @@ async function runAction(action, sourceDom, page) {
   return result;
 }
 
+
+
 //add disclaimer watermark
 //TODO: refactor disclaimer text to a static file
 function addDisclaminerWatermark(html) {
@@ -370,6 +374,7 @@ function addDisclaminerWatermark(html) {
   let bodyTag = html.match(/<body[^>]*>/);
   return bodyTag ? html.replace(bodyTag, bodyTag + watermarkTpl) : html;
 }
+
 
 async function amplifyFunc(browser, url, steps, argv, computedDimensions) {
   argv = argv || {};
@@ -482,7 +487,7 @@ async function amplifyFunc(browser, url, steps, argv, computedDimensions) {
 
       try {
         // The sourceDom will be updated after each action.
-        actionResult = await runAction(action, sourceDom, page);
+        actionResult = await runAction(action, sourceDom);
         html = actionResult.html;
         optimizedStyles = actionResult.optimizedStyles;
         unusedStyles = actionResult.unusedStyles;
@@ -559,26 +564,37 @@ async function amplifyFunc(browser, url, steps, argv, computedDimensions) {
   console.log(`You can find the output files at ./output/${outputPath}/`.cyan);
 }
 
+
+// TODO
+// Change to pass a file instead of a URL
 async function amplify(url, steps, argv) {
   let isHeadless = argv['headless'] ? argv['headless'] === 'true' : true;
   port = argv['port'] || port;
 
-  // Start puppeteer.
-  const browser = await puppeteer.launch({
-    headless: isHeadless,
-  });
+  let isCompiling = argv['compiler'] ? argv['compiler'] === 'true' : true;
+  // If compiling, we avoid utilization of puppeteer
+  if (isCompiling) {
+    compile.compileFunc(url, steps, argv);
+  } else {
+    // Start puppeteer.
+    const browser = await puppeteer.launch({
+      headless: isHeadless,
+    });
 
-  try {
-    await amplifyFunc(browser, url, steps, argv, computedDimensions);
-    console.log('Complete.'.green);
+    try {
+      await amplifyFunc(browser, url, steps, argv, computedDimensions);
+      console.log('Complete.'.green);
 
-  } catch (e) {
-    console.error(e);
-    console.log('Complete with errors.'.yellow);
+    } catch (e) {
+      console.error(e);
+      console.log('Complete with errors.'.yellow);
 
-  } finally {
-    if (browser) await browser.close();
+    } finally {
+      if (browser) await browser.close();
+    }
   }
+
+  
 }
 
 async function compareImages(image1Path, image2Path, diffPath, computedHeight, computedWidth, page, backgroundImage, server, replacementPath){
@@ -634,5 +650,5 @@ module.exports = {
   amplify: amplify,
   runComparison,
   resizeImage,
-  innerFunc: amplifyFunc
+  innerFunc: amplifyFunc,
 };
