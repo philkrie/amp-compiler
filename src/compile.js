@@ -7,25 +7,18 @@ const mkdirp = require('mkdirp');
 const rimraf = require('rimraf');
 const path = require('path');
 const beautify = require('js-beautify').html;
-const colors = require('colors');
-const amphtmlValidator = require('amphtml-validator');
 const purify = require("purify-css")
-const argv = require('minimist')(process.argv.slice(2));
 const CleanCSS = require('clean-css');
 const Diff = require('diff');
 const assert = require('assert');
-const httpServer = require('http-server');
 const {
   JSDOM
 } = require("jsdom");
-const PNG = require('pngjs').PNG;
-const pixelmatch = require('pixelmatch');
-const watermarkTpl = require('./watermark');
 const fs = require('fs');
+const core = require('./core')
+const helper = require('./helper');
 
 
-
-//TODO change to remove puppeteer context and dependency
 function runCompileAction(action, sourceDom) {
   let elements, el, destEl, elHtml, regex, matches, newEl, body;
   let numReplaced = 0,
@@ -37,7 +30,7 @@ function runCompileAction(action, sourceDom) {
 
   // Replace the action's all properties with envVars values.
   Object.keys(action).forEach((prop) => {
-    action[prop] = replaceEnvVars(action[prop]);
+    action[prop] = helper.replaceEnvVars(action[prop]);
   });
 
   switch (action.actionType) {
@@ -279,14 +272,14 @@ function runCompileAction(action, sourceDom) {
   console.log(`\t${action.log || action.actionType}:`.reset + ` ${message}`.dim);
 
   // Beautify html and update to source DOM.
-  html = beautifyHtml(sourceDom);
+  html = helper.beautifyHtml(sourceDom);
   sourceDom.documentElement.innerHTML = html;
 
+  //TODO Enable final validation
   // Validate AMP.
-//   ampErrors = validateAMP(html);
+  //ampErrors = validateAMP(html);
 
   // Update page content with updated HTML.
-
 
   result.html = html;
   return result;
@@ -301,199 +294,136 @@ function validURL(str) {
       '(\\?[;&a-z\\d%_.~+=-]*)?'+ // query string
       '(\\#[-a-z\\d_]*)?$','i'); // fragment locator
     return !!pattern.test(str);
-  }
+}
   
-// TODO
-// Modify to work with HTML file instead of puppeteer
-// Input: path, steps, argv
 async function compileFunc(path, steps, argv) {
-console.log("Compiling...")
-//Identify if path is local or a remote URL
-var pageContent = null;
-//URL path
-if (validURL(path)) {
+  console.log("Compiling...");
+  console.log(core);
+  //Identify if path is local or a remote URL
+  var pageContent = null;
+  //TODO enable URL path
+  //URL path
+  if (validURL(path)) {
     console.log("Requesting document from URL");
     pageContent = fetch(path);
-//Local path
-} else {
+  //Local path
+  } else {
     console.log("Requesting document from local path");
     try {
-    pageContent = fs.readFileSync(path, 'utf8');
-    console.log(pageContent);
-    console.log("Read HTML from local file")
+      pageContent = fs.readFileSync(path, 'utf8');
     } catch (err) {
-    console.log(err)
+      console.log(err)
     }
-}
-try {
-    //TODO clean this to remove puppeteer dependencies and contexts
-argv = argv || {};
+  }
 
-envVars = {
-    '$URL': "testing",
-    '$HOST': "testing",
-    '$DOMAIN': "testing",
-  };
-verbose = argv.hasOwnProperty('verbose');
+  try {
 
-let customHost = argv['customHost']
+    argv = argv || {};
+    // Fix or remove dependency
+    envVars = {
+        '$URL': "testing",
+        '$HOST': "testing",
+        '$DOMAIN': "testing",
+      };
 
-// Print warnings when missing necessary arguments.
-assert(steps, 'Missing steps');
+    verbose = argv.hasOwnProperty('verbose');
 
-outputPath = argv['output'] || path.replace(/\//ig, '_');
+    let customHost = argv['customHost']
 
-console.log('Output Path: ' + outputPath.green);
+    // Print warnings when missing necessary arguments.
+    assert(steps, 'Missing steps');
 
-// Create directory if it doesn't exist.
-mkdirp(`./output/${outputPath}/`, (err) => {
-    if (err) throw new Error(`Unable to create directory ${err}`);
-});
-rimraf(`./output/${outputPath}/*`, () => {
-    console.log(`Removed previous output in ./output/${outputPath}`.dim);
-});
+    outputPath = argv['output'] || path.replace(/\//ig, '_');
 
-console.log("Created")
-// Open URL and save source to sourceDom.
-sourceDom = new JSDOM(pageContent).window.document;
-console.log("sourcedom and validation")
+    console.log('Output Path: ' + outputPath.green);
 
-// Output initial HTML, screenshot and amp errors.
-await writeToFile(`output-original.html`, pageContent);
+    // Create directory if it doesn't exist.
+    mkdirp(`./output/${outputPath}/`, (err) => {
+      if (err) throw new Error(`Unable to create directory ${err}`);
+    });
+    rimraf(`./output/${outputPath}/*`, () => {
+      console.log(`Removed previous output in ./output/${outputPath}`.dim);
+    });
 
-console.log("sourcedom and validation 2")
+    console.log("Created")
+    // Open URL and save source to sourceDom.
+    sourceDom = new JSDOM(pageContent).window.document;
 
+    // Output initial HTML, screenshot and amp errors.
+    await helper.writeToFile(`output-original.html`, pageContent);
 
-let i = 1;
-let stepOutput = '';
-let html = beautifyHtml(sourceDom);
-let actionResult, optimizedStyles, unusedStyles, oldStyles;
+    let i = 1;
+    let stepOutput = '';
+    let html = helper.beautifyHtml(sourceDom);
+    let actionResult, optimizedStyles, unusedStyles, oldStyles;
 
-for (let i = 0; i < steps.length; i++) {
-    consoleOutputs = [];
-    let step = steps[i];
+    for (let i = 0; i < steps.length; i++) {
+      consoleOutputs = [];
+      let step = steps[i];
 
-    if (!step.actions || step.skip) continue;
-    console.log(`Step ${i+1}: ${step.name}`.yellow);
+      if (!step.actions || step.skip) continue;
+      console.log(`Step ${i+1}: ${step.name}`.yellow);
 
-    for (let j = 0; j < step.actions.length; j++) {
-    let action = step.actions[j];
-
-    try {
-        // The sourceDom will be updated after each action.
-        actionResult = runCompileAction(action, sourceDom);
-        html = actionResult.html;
-        optimizedStyles = actionResult.optimizedStyles;
-        unusedStyles = actionResult.unusedStyles;
-
-    } catch (e) {
-        if (verbose) {
-        console.log(e);
-        } else {
-        console.log(`\t${action.log || action.type}:`.reset +
+      for (let j = 0; j < step.actions.length; j++) {
+        let action = step.actions[j];
+        try {
+          // The sourceDom will be updated after each action.
+          actionResult = runCompileAction(action, sourceDom);
+          html = actionResult.html;
+          optimizedStyles = actionResult.optimizedStyles;
+          unusedStyles = actionResult.unusedStyles;
+        } catch (e) {
+          if (verbose) {
+            console.log(e);
+          } else {
+            console.log(`\t${action.log || action.type}:`.reset +
             ` Error: ${e.message}`.red);
+          }
         }
-    }
-    }
-
-    // Write HTML to file.
-    writeToFile(`steps/output-step-${i+1}.html`, html);
-
-    console.log("PLS")
-
-
-    if (optimizedStyles) {
-        writeToFile(`steps/output-step-${i+1}-optimized-css.css`,
-        optimizedStyles);
-    }
-    if (unusedStyles) {
-        writeToFile(`steps/output-step-${i+1}-unused-css.css`,
-        unusedStyles);
-    }
-
-    // writeToFile(`steps/output-step-${i+1}-validation.txt`, (ampErrors || []).join('\n'));
-
-    // Print AMP validation result.
-
-    // ampErrors = validateAMP(html, true /* printResult */ );
-}
-
-//Add the disclaimer watermark
-html = addDisclaminerWatermark(html);
-
-// Write final outcome to file.
-await writeToFile(`output-final.html`, html);
-
-// await writeToFile(`output-final-validation.txt`, (ampErrors || []).join('\n'));
-
-
-
-console.log(`You can find the output files at ./output/${outputPath}/`.cyan);
-
-
-// Get doc from remote URL, or read in local file
-// Utilize step logic to parse through the text as per the amplifyFunc
-} catch (error) {
-    console.log(error)
-}
-
-
-}
-
-async function writeToFile(filename, html) {
-    let filePath = path.resolve(`./output/${outputPath}/${filename}`);
-    console.log(filePath)
-    try {
-        fse.outputFileSync(filePath, html);
-    } catch (err){
-        console.error(err);
-    }
-}
-
-function beautifyHtml(sourceDom) {
-    // Beautify html.
-    let html = beautify(sourceDom.documentElement.outerHTML, {
-      indent_size: 2,
-      preserve_newlines: false,
-      content_unformatted: ['script', 'style'],
-    });
-    return '<!DOCTYPE html>\n' + html;
-  }
-
-  function replaceEnvVars(str) {
-    Object.keys(envVars).forEach((key) => {
-      if (typeof str === 'string') {
-        str = str.replace(key, envVars[key]);
       }
-    });
-    return str;
-  }
-  async function validateAMP(html, printResult) {
-    const ampValidator = await amphtmlValidator.getInstance();
-    let errors = [];
-  
-    let result = ampValidator.validateString(html);
-    if (result.status === 'PASS') {
-      if (printResult) console.log('\tAMP validation successful.'.green);
-    } else {
-      result.errors.forEach((e) => {
-        var msg = `line ${e.line}, col ${e.col}: ${e.message}`;
-        if (e.specUrl) msg += ` (see ${e.specUrl})`;
-        if (verbose) console.log('\t' + msg.dim);
-        errors.push(msg);
-      });
-      if (printResult)
-        console.log(`\t${errors.length} AMP validation errors.`.red);
-    }
-    return Promise.resolve(errors);
-  }
 
-  function addDisclaminerWatermark(html) {
-    console.log('Adding disclaimer'.yellow);
-    let bodyTag = html.match(/<body[^>]*>/);
-    return bodyTag ? html.replace(bodyTag, bodyTag + watermarkTpl) : html;
+      // Write HTML to file.
+      helper.writeToFile(`steps/output-step-${i+1}.html`, html);
+
+      console.log("PLS")
+
+
+      if (optimizedStyles) {
+          helper.writeToFile(`steps/output-step-${i+1}-optimized-css.css`,
+          optimizedStyles);
+      }
+      if (unusedStyles) {
+          helper.writeToFile(`steps/output-step-${i+1}-unused-css.css`,
+          unusedStyles);
+      }
+
+      // helper.writeToFile(`steps/output-step-${i+1}-validation.txt`, (ampErrors || []).join('\n'));
+
+      // Print AMP validation result.
+
+      // ampErrors = validateAMP(html, true /* printResult */ );
+    }
+
+    //Add the disclaimer watermark
+    html = helper.addDisclaminerWatermark(html);
+
+    // Write final outcome to file.
+    await helper.writeToFile(`output-final.html`, html);
+
+    // await helper.writeToFile(`output-final-validation.txt`, (ampErrors || []).join('\n'));
+
+
+
+    console.log(`You can find the output files at ./output/${outputPath}/`.cyan);
+
+
+    // Get doc from remote URL, or read in local file
+    // Utilize step logic to parse through the text as per the amplifyFunc
+  } catch (error) {
+    console.log(error)
   }
+}
 
 module.exports = {
-compileFunc: compileFunc,
+  compileFunc: compileFunc,
 };

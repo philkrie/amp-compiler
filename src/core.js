@@ -1,100 +1,25 @@
-const puppeteer = require('puppeteer');
-const devices = require('puppeteer/DeviceDescriptors');
+/**
+ * Additional functions for the purpose of compiling AMP w/o Puppeteer
+ */
+
 const fse = require('fs-extra');
 const mkdirp = require('mkdirp');
 const rimraf = require('rimraf');
 const path = require('path');
 const beautify = require('js-beautify').html;
-const colors = require('colors');
-const amphtmlValidator = require('amphtml-validator');
 const purify = require("purify-css")
-const argv = require('minimist')(process.argv.slice(2));
 const CleanCSS = require('clean-css');
 const Diff = require('diff');
 const assert = require('assert');
-const httpServer = require('http-server');
 const {
   JSDOM
 } = require("jsdom");
-const PNG = require('pngjs').PNG;
-const pixelmatch = require('pixelmatch');
-const watermarkTpl = require('./watermark');
 const fs = require('fs');
-const compile = require('./compile');
+const core = require('./core')
+const helper = require('./helper');
 
 
-let outputPath, verbose, envVars;
-let computedDimensions = {};
-let styleByUrls = {},
-  allStyles = '';
-let port = 8080;
-var sourceDom = null;
-
-function replaceEnvVars(str) {
-  Object.keys(envVars).forEach((key) => {
-    if (typeof str === 'string') {
-      str = str.replace(key, envVars[key]);
-    }
-  });
-  return str;
-}
-
-async function collectStyles(response) {
-  if (response.request().resourceType() === 'stylesheet') {
-    let url = await response.url();
-    let text = await response.text();
-    allStyles += text;
-    styleByUrls[url] = text;
-  }
-}
-
-async function validateAMP(html, printResult) {
-  const ampValidator = await amphtmlValidator.getInstance();
-  let errors = [];
-
-  let result = ampValidator.validateString(html);
-  if (result.status === 'PASS') {
-    if (printResult) console.log('\tAMP validation successful.'.green);
-  } else {
-    result.errors.forEach((e) => {
-      var msg = `line ${e.line}, col ${e.col}: ${e.message}`;
-      if (e.specUrl) msg += ` (see ${e.specUrl})`;
-      if (verbose) console.log('\t' + msg.dim);
-      errors.push(msg);
-    });
-    if (printResult)
-      console.log(`\t${errors.length} AMP validation errors.`.red);
-  }
-  return Promise.resolve(errors);
-}
-
-function matchAmpErrors(errors, ampErrorsRegex) {
-  let resultSet = new Set();
-  errors.forEach(error => {
-    let matches = error.match(new RegExp(ampErrorsRegex));
-    if (matches) {
-      resultSet.add(matches);
-    }
-  });
-  return resultSet;
-}
-
-function beautifyHtml(sourceDom) {
-  // Beautify html.
-  let html = beautify(sourceDom.documentElement.outerHTML, {
-    indent_size: 2,
-    preserve_newlines: false,
-    content_unformatted: ['script', 'style'],
-  });
-  return '<!DOCTYPE html>\n' + html;
-}
-
-async function writeToFile(filename, html, options) {
-  let filePath = path.resolve(`./output/${outputPath}/${filename}`);
-  await fse.outputFile(filePath, html);
-}
-
-async function runAction(action, sourceDom, page) {
+function runCompileAction(action, sourceDom) {
   let elements, el, destEl, elHtml, regex, matches, newEl, body;
   let numReplaced = 0,
     oldStyles = '',
@@ -105,12 +30,8 @@ async function runAction(action, sourceDom, page) {
 
   // Replace the action's all properties with envVars values.
   Object.keys(action).forEach((prop) => {
-    action[prop] = replaceEnvVars(action[prop]);
+    action[prop] = helper.replaceEnvVars(action[prop]);
   });
-
-  if (action.waitAfterLoaded) {
-    await page.waitFor(action.waitAfterLoaded);
-  }
 
   switch (action.actionType) {
     case 'setAttribute':
@@ -334,13 +255,14 @@ async function runAction(action, sourceDom, page) {
       message = `Removed ${ratio}% styles. (${oldSize} -> ${newSize} bytes)`;
       break;
 
+    // customfunc not supported if requires puppeteer page
     case 'customFunc':
       elements = sourceDom.querySelectorAll(action.selector);
       if (!elements.length) throw new Error(`No matched element(s): ${action.selector}`);
 
-      if (action.customFunc) {
-        await action.customFunc(action, elements, page);
-      }
+      // if (action.customFunc) {
+      //   await action.customFunc(action, elements, page);
+      // }
       break;
 
     default:
@@ -350,305 +272,156 @@ async function runAction(action, sourceDom, page) {
   console.log(`\t${action.log || action.actionType}:`.reset + ` ${message}`.dim);
 
   // Beautify html and update to source DOM.
-  html = beautifyHtml(sourceDom);
+  html = helper.beautifyHtml(sourceDom);
   sourceDom.documentElement.innerHTML = html;
 
+  //TODO Enable final validation
   // Validate AMP.
-  ampErrors = await validateAMP(html);
+  //ampErrors = validateAMP(html);
 
   // Update page content with updated HTML.
-  await page.setContent(html, {
-    waitUntil: 'networkidle0',
-  });
 
   result.html = html;
   return result;
 }
 
 
-
-//add disclaimer watermark
-//TODO: refactor disclaimer text to a static file
-function addDisclaminerWatermark(html) {
-  console.log('Adding disclaimer'.yellow);
-  let bodyTag = html.match(/<body[^>]*>/);
-  return bodyTag ? html.replace(bodyTag, bodyTag + watermarkTpl) : html;
-}
-
-
-async function amplifyFunc(browser, url, steps, argv, computedDimensions) {
-  argv = argv || {};
-  verbose = argv.hasOwnProperty('verbose');
-
-  let device = argv['device'] || 'Pixel 2'
-  let customHost = argv['customHost']
-  let consoleOutputs = [];
-
-  // Print warnings when missing necessary arguments.
-  assert(url, 'Missing url.');
-  assert(steps, 'Missing steps');
-
-  // Set default protocol as https if no protocol is given.
-  let protocol = url.match(/(https|http).*/i);
-  url = protocol ? url : 'https://' + url;
-
-  let host = url.match(/(https|http)\:\/\/([\w.-]*(\:\d+)?)/i)[0];
-  assert(host, 'Unable to get host from ' + url);
-
-  let domain = host.replace(/http(s)?:\/\//ig, '');
-  let urlWithoutProtocol = url.replace(/http(s)?:\/\//ig, '');
-  assert(domain, 'Unable to get domain from ' + url);
-
-  // Set output subfolder using domain if undefined.
-  outputPath = argv['output'] || urlWithoutProtocol.replace(/\//ig, '_');
-
-  envVars = {
-    '$URL': encodeURI(url),
-    '$HOST': customHost || host,
-    '$DOMAIN': domain,
-  };
-
-  console.log('Url: ' + url.green);
-  console.log('Host: ' + host.green);
-  console.log('Domain: ' + domain.green);
-
-  // Create directory if it doesn't exist.
-  mkdirp(`./output/${outputPath}/`, (err) => {
-    if (err) throw new Error(`Unable to create directory ${err}`);
-  });
-  rimraf(`./output/${outputPath}/*`, () => {
-    console.log(`Removed previous output in ./output/${outputPath}`.dim);
-  });
-
-  const page = await browser.newPage();
-  await page.emulate(devices[device]);
-  page.on('response', collectStyles);
-  page.on('console', (consoleObj) => {
-    consoleOutputs.push(consoleObj.text());
-  });
-
-  console.log(`Step 0: loading page: ${url}`.yellow);
-
-  // Open URL and save source to sourceDom.
-  let response = await page.goto(url);
-  let pageSource = await response.text();
-  let pageContent = await page.content();
-  computedDimensions.computedHeight = await page.$eval('body', (ele) => {
-    let compStyles = window.getComputedStyle(ele);
-    return compStyles.getPropertyValue('height');
-  });
-  computedDimensions.computedWidth = await page.$eval('body', (ele) => {
-    let compStyles = window.getComputedStyle(ele);
-    return compStyles.getPropertyValue('width');
-  });
-  sourceDom = new JSDOM(pageContent, {
-    url: host
-  }).window.document;
-  let ampErrors = await validateAMP(pageContent);
-
-  // Output initial HTML, screenshot and amp errors.
-  await writeToFile(`output-original.html`, pageContent);
-  await page.screenshot({
-    path: `output/${outputPath}/output-original.png`,
-    fullPage: argv['fullPageScreenshot']
-  });
-  await writeToFile(`output-original-validation.txt`, ampErrors.join('\n'));
-
-  // Clear page.on listener.
-  page.removeListener('response', collectStyles);
-
-  let i = 1;
-  let stepOutput = '';
-  let html = beautifyHtml(sourceDom);
-  let actionResult, optimizedStyles, unusedStyles, oldStyles;
-
-  // Since puppeteer thinks were still on a public facing server
-  // setting it to localhost will allow us to continue seeing
-  // a page even with some errors!
-  let server = httpServer.createServer({root:`output/${outputPath}/`});
-  server.listen(port, '127.0.0.1', () => {
-    console.log('Local server started!'.cyan);
-  });
-  response = await page.goto(`http://127.0.0.1:${port}`);
-
-  if(!response.ok()){
-    console.warn('Could not connect to local server with Puppeteer!');
+async function compileFunc(path, steps, argv) {
+  console.log("Compiling...");
+  console.log(core);
+  //Identify if path is local or a remote URL
+  var pageContent = null;
+  //TODO enable URL path
+  //URL path
+  if (helper.validURL(path)) {
+    console.log("Requesting document from URL");
+    pageContent = fetch(path);
+  //Local path
+  } else {
+    console.log("Requesting document from local path");
+    try {
+      pageContent = fs.readFileSync(path, 'utf8');
+    } catch (err) {
+      console.log(err)
+    }
   }
 
-  for (let i = 0; i < steps.length; i++) {
-    consoleOutputs = [];
-    let step = steps[i];
+  try {
 
-    if (!step.actions || step.skip) continue;
-    console.log(`Step ${i+1}: ${step.name}`.yellow);
+    argv = argv || {};
+    // Fix or remove dependency
+    envVars = {
+        '$URL': "testing",
+        '$HOST': "testing",
+        '$DOMAIN': "testing",
+      };
 
-    for (let j = 0; j < step.actions.length; j++) {
-      let action = step.actions[j];
+    verbose = argv.hasOwnProperty('verbose');
 
-      try {
-        // The sourceDom will be updated after each action.
-        actionResult = await runAction(action, sourceDom);
-        html = actionResult.html;
-        optimizedStyles = actionResult.optimizedStyles;
-        unusedStyles = actionResult.unusedStyles;
+    let customHost = argv['customHost']
 
-      } catch (e) {
-        if (verbose) {
-          console.log(e);
-        } else {
-          console.log(`\t${action.log || action.type}:`.reset +
+    // Print warnings when missing necessary arguments.
+    assert(steps, 'Missing steps');
+
+    outputPath = argv['output'] || path.replace(/\//ig, '_');
+
+    console.log('Output Path: ' + outputPath.green);
+
+    // Create directory if it doesn't exist.
+    mkdirp(`./output/${outputPath}/`, (err) => {
+      if (err) throw new Error(`Unable to create directory ${err}`);
+    });
+    rimraf(`./output/${outputPath}/*`, () => {
+      console.log(`Removed previous output in ./output/${outputPath}`.dim);
+    });
+
+    console.log("Created")
+    // Open URL and save source to sourceDom.
+    sourceDom = new JSDOM(pageContent).window.document;
+
+    // Output initial HTML, screenshot and amp errors.
+    await helper.writeToFile(`output-original.html`, pageContent);
+
+    let i = 1;
+    let stepOutput = '';
+    let html = helper.beautifyHtml(sourceDom);
+    let actionResult, optimizedStyles, unusedStyles, oldStyles;
+
+    for (let i = 0; i < steps.length; i++) {
+      consoleOutputs = [];
+      let step = steps[i];
+
+      if (!step.actions || step.skip) continue;
+      console.log(`Step ${i+1}: ${step.name}`.yellow);
+
+      for (let j = 0; j < step.actions.length; j++) {
+        let action = step.actions[j];
+        try {
+          // The sourceDom will be updated after each action.
+          actionResult = runCompileAction(action, sourceDom);
+          html = actionResult.html;
+          optimizedStyles = actionResult.optimizedStyles;
+          unusedStyles = actionResult.unusedStyles;
+        } catch (e) {
+          if (verbose) {
+            console.log(e);
+          } else {
+            console.log(`\t${action.log || action.type}:`.reset +
             ` Error: ${e.message}`.red);
+          }
         }
       }
+
+      // Write HTML to file.
+      helper.writeToFile(`steps/output-step-${i+1}.html`, html);
+
+      console.log("PLS")
+
+
+      if (optimizedStyles) {
+          helper.writeToFile(`steps/output-step-${i+1}-optimized-css.css`,
+          optimizedStyles);
+      }
+      if (unusedStyles) {
+          helper.writeToFile(`steps/output-step-${i+1}-unused-css.css`,
+          unusedStyles);
+      }
+
+      // helper.writeToFile(`steps/output-step-${i+1}-validation.txt`, (ampErrors || []).join('\n'));
+
+      // Print AMP validation result.
+
+      // ampErrors = validateAMP(html, true /* printResult */ );
     }
 
-    // Write HTML to file.
-    await writeToFile(`steps/output-step-${i+1}.html`, html);
+    //Add the disclaimer watermark
+    html = helper.addDisclaminerWatermark(html);
 
-    if (optimizedStyles) {
-      await writeToFile(`steps/output-step-${i+1}-optimized-css.css`,
-        optimizedStyles);
-    }
-    if (unusedStyles) {
-      await writeToFile(`steps/output-step-${i+1}-unused-css.css`,
-        unusedStyles);
-    }
+    // Write final outcome to file.
+    await helper.writeToFile(`output-final.html`, html);
 
-    // Update page content with updated HTML.
-    await page.setContent(html, {
-      waitUntil: 'networkidle0',
-    });
+    // await helper.writeToFile(`output-final-validation.txt`, (ampErrors || []).join('\n'));
 
-    // Take and save screenshot to file.
-    // await page.waitFor(500);
 
-    // Uncomment to see what the browser is seeing
-    // await writeToFile(`steps/output-step-${i+1}-page-output.html`, await page.content());
 
-    await page.screenshot({
-      path: `output/${outputPath}/steps/output-step-${i+1}.png`,
-      fullPage: argv['fullPageScreenshot']
-    });
+    console.log(`You can find the output files at ./output/${outputPath}/`.cyan);
 
-    await writeToFile(`steps/output-step-${i+1}-validation.txt`, (ampErrors || []).join('\n'));
 
-    // Print AMP validation result.
-    ampErrors = await validateAMP(html, true /* printResult */ );
+    // Get doc from remote URL, or read in local file
+    // Utilize step logic to parse through the text as per the amplifyFunc
+  } catch (error) {
+    console.log(error)
   }
-
-  //Add the disclaimer watermark
-  html = addDisclaminerWatermark(html);
-
-  // need to make sure we close out the server that was used!
-  await server.close();
-  console.log('Local server closed!'.cyan);
-
-  // Write final outcome to file.
-  await writeToFile(`output-final.html`, html);
-  await page.screenshot({
-    path: `output/${outputPath}/output-final.png`,
-    fullPage: argv['fullPageScreenshot']
-  });
-  await writeToFile(`output-final-validation.txt`, (ampErrors || []).join('\n'));
-
-  if (argv['compareScreenshots'] && argv['compareScreenshots'] === 'true') {
-    try{
-      await compareImages(`output/${outputPath}/output-original.png`,
-        `output/${outputPath}/output-final.png`,
-        `output/${outputPath}/output-difference.png`, computedDimensions.computedHeight, computedDimensions.computedWidth, page, 'output-final.png', server, `output/${outputPath}/output-replace.png`);
-    } catch(error) {
-      console.log('Not able to compare at this time, please create issue with following info: '.yellow, error);
-    }
-  }
-
-  console.log(`You can find the output files at ./output/${outputPath}/`.cyan);
 }
-
 
 // TODO
 // Change to pass a file instead of a URL
-async function amplify(url, steps, argv) {
-  let isHeadless = argv['headless'] ? argv['headless'] === 'true' : true;
-  port = argv['port'] || port;
-
-  let isCompiling = argv['compiler'] ? argv['compiler'] === 'true' : true;
-  // If compiling, we avoid utilization of puppeteer
-  if (isCompiling) {
-    compile.compileFunc(url, steps, argv);
-  } else {
-    // Start puppeteer.
-    const browser = await puppeteer.launch({
-      headless: isHeadless,
-    });
-
-    try {
-      await amplifyFunc(browser, url, steps, argv, computedDimensions);
-      console.log('Complete.'.green);
-
-    } catch (e) {
-      console.error(e);
-      console.log('Complete with errors.'.yellow);
-
-    } finally {
-      if (browser) await browser.close();
-    }
-  }
-
-  
-}
-
-async function compareImages(image1Path, image2Path, diffPath, computedHeight, computedWidth, page, backgroundImage, server, replacementPath){
-  const img1 = PNG.sync.read(fse.readFileSync(image1Path));
-  let img2 = PNG.sync.read(fse.readFileSync(image2Path));
-
-  let {width, height} = img1;
-  if(img1.height > img2.height) {
-    img2 = await resizeImage(computedHeight, computedWidth, backgroundImage, replacementPath, server, page);
-  }
-  const diff = new PNG({width,height});
-  const mismatch = runComparison(img1.data, img2.data, diff, width, height);
-
-  console.log(`Difference between original and converted: ${((mismatch/(width * height)) * 100).toFixed(2)}%`);
-
-  fse.writeFileSync(diffPath, PNG.sync.write(diff));
-}
-
-async function resizeImage(height, width, imageLocation, replacementPath, server, page) {
-  server = httpServer.createServer({root:`output/${outputPath}/`});
-  await server.listen(port, '127.0.0.1', () => {
-  });
-  await page.goto(`http://127.0.0.1:${port}`);
-  const newscreenshot = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-    <meta name="viewport" content="width=device-width,minimum-scale=1,initial-scale=1">
-    </head>
-    <body style="padding:0;margin:0;">
-    <div style="padding:0; margin:0; max-height:${height}; height:${height};width:${width};background:url(${imageLocation}) no-repeat; background-size: contain;">
-
-    </div>
-    </body>
-    </html>
-  `;
-  await page.setContent(newscreenshot);
-  // Uncomment if you want to debug
-  await writeToFile(`output-replace.html`, await page.content());
-  await page.screenshot({
-    path: replacementPath,
-    fullPage: argv['fullPageScreenshot']
-  });
-  await server.close();
-  return PNG.sync.read(fse.readFileSync(replacementPath));
-}
-
-function runComparison(img1Data, img2Data, diff, width, height){
-  return pixelmatch(img1Data, img2Data, diff.data, width, height, {threshold: 0.1});
+// This should eventually contain logic for URLs
+// And other cases, otherwise it's pretty redundant lol
+async function compile(path, steps, argv) {
+    compileFunc(path, steps, argv);
 }
 
 module.exports = {
-  amplify: amplify,
-  runComparison,
-  resizeImage,
-  innerFunc: amplifyFunc,
+  compile: compile,
 };
