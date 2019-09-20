@@ -1,26 +1,26 @@
 module.exports = [
-  {
-    name: 'Make relative URLs absolute',
-    actions: [{
-      log: 'Adding https for URLs that start with \/\/',
-      actionType: 'replace',
-      selector: 'head, body',
-      regex: '(href|src)=["\']\/\/([^\)^"^\']*)["\']',
-      replace: '$1="$2"',
-    }, {
-      log: 'Update relative URLs',
-      actionType: 'replace',
-      selector: 'head, body',
-      regex: '(href|src)=["\'](\\.*\\/[^\)^"^\']*)["\']',
-      replace: '$1="$HOST/$2"',
-    }, {
-      log: 'Update relative URLs in CSS url()',
-      actionType: 'replace',
-      selector: 'style',
-      regex: 'url\\(["\']?(\\.*[^\)^"^\']*)["\']?\\)',
-      replace: 'url($HOST/$1)',
-    }],
-  },
+  // {
+  //   name: 'Make relative URLs absolute',
+  //   actions: [{
+  //     log: 'Adding https for URLs that start with \/\/',
+  //     actionType: 'replace',
+  //     selector: 'head, body',
+  //     regex: '(href|src)=["\']\/\/([^\)^"^\']*)["\']',
+  //     replace: '$1="$2"',
+  //   }, {
+  //     log: 'Update relative URLs',
+  //     actionType: 'replace',
+  //     selector: 'head, body',
+  //     regex: '(href|src)=["\'](\\.*\\/[^\)^"^\']*)["\']',
+  //     replace: '$1="$HOST/$2"',
+  //   }, {
+  //     log: 'Update relative URLs in CSS url()',
+  //     actionType: 'replace',
+  //     selector: 'style',
+  //     regex: 'url\\(["\']?(\\.*[^\)^"^\']*)["\']?\\)',
+  //     replace: 'url($HOST/$1)',
+  //   }],
+  // },
   {
     name: 'Remove disallowed tags',
     actions: [{
@@ -35,13 +35,7 @@ module.exports = [
       selector: 'html',
       regex: '(<!--)?.*<script[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>.*(?:-->)?',
       replace: '',
-    }, {
-      log: 'Remove third-party elements',
-      actionType: 'replace',
-      selector: 'html',
-      regex: '(<!--)?.*<(script|link) .*(src|href)=(?!"($HOST|#)).*>.*(?:-->)?',
-      replace: '',
-    }, {
+    },  {
       log: 'Remove javascript:void(0)',
       actionType: 'replace',
       selector: 'html',
@@ -95,12 +89,6 @@ module.exports = [
       selector: 'style',
       regex: '\\!important',
       replace: '',
-    }, {
-      log: 'Update relative URLs in CSS.',
-      actionType: 'replace',
-      selector: 'style',
-      regex: 'url\\(["\']?((?!http(s?))[^\)^"^\']*)["\']?\\)',
-      replace: 'url("$HOST/$1")',
     }],
   },
   {
@@ -158,7 +146,7 @@ module.exports = [
       actionType: 'replaceOrInsert',
       selector: 'head',
       regex: '<link rel=(\")?canonical(\")?.*>',
-      replace: '<link rel=canonical href="%%URL%%">',
+      replace: '<link rel=canonical href="">',
     }, {
       log: 'Add AMP boilerplate.',
       actionType: 'insert',
@@ -206,14 +194,5 @@ module.exports = [
       attribute: 'layout',
       value: 'fixed',
     }],
-  },
-  {
-    name: 'Remove disallowed attributes and tags based on AMP validation result.',
-    actions: [{
-      log: 'Remove disallowed attributes',
-      actionType: 'removeDisallowedAttribute',
-      selector: 'html',
-    }],
-  },
-
+  }
 ];
