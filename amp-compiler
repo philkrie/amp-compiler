@@ -2,10 +2,10 @@
 
 'use strict';
 
-const prototyper = require('./src/cli.js');
+const compiler = require('./src/cli.js');
 
 Promise.all([
-  prototyper.begin()
+  compiler.begin()
 ]).then(process.exit)
 .catch(reason => {
   console.log(reason);

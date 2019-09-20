@@ -1,5 +1,5 @@
 {
-  "name": "amp-prototyper",
+  "name": "amp-compiler",
   "version": "1.1.0",
   "description": "",
   "main": "main.js",
@@ -11,16 +11,16 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jonchenn/amp-prototyper.git"
+    "url": "git+https://github.com/philkrie/amp-compiler.git"
   },
   "author": "",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/jonchenn/amp-prototyper/issues"
+    "url": "https://github.com/philkrie/amp-compiler/issues"
   },
-  "homepage": "https://github.com/jonchenn/amp-prototyper#readme",
+  "homepage": "https://github.com/philkrie/amp-compiler#readme",
   "bin": {
-    "amp-prototyper": "./amp-prototyper"
+    "amp-compiler": "./amp-compiler"
   },
   "dependencies": {
     "amphtml-validator": "^1.0.23",

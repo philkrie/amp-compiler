@@ -1,4 +1,4 @@
-const prototyper = require('../src/core');
+const compiler = require('../src/core');
 const steps = require('../steps/default-steps');
 const filesToTest = [
   {path:'', expected_output: ''},
